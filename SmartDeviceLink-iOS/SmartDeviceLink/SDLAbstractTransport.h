@@ -4,7 +4,7 @@
 
 #import "SDLTransportDelegate.h"
 
-@interface SDLAbstractTransport : NSObject
+@interface SDLAbstractTransport : NSObject<NSStreamDelegate>
 
 @property (weak) id<SDLTransportDelegate> delegate;
 @property (strong) NSString *debugConsoleGroupName;

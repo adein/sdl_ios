@@ -3,7 +3,7 @@
 
 #import "SDLAbstractTransport.h"
 
-@interface SDLTCPTransport : SDLAbstractTransport {
+@interface SDLTCPTransport : SDLAbstractTransport<NSStreamDelegate> {
     CFSocketRef socket;
 }
 

@@ -25,6 +25,9 @@ static void TCPCallback(CFSocketRef socket, CFSocketCallBackType type, CFDataRef
     dispatch_queue_t _sendQueue;
 }
 
+@property (strong, nonatomic) NSInputStream *inputStream;
+@property (strong, nonatomic) NSOutputStream *outputStream;
+@property (assign, nonatomic) BOOL connected;
 @end
 
 
@@ -38,34 +41,37 @@ static void TCPCallback(CFSocketRef socket, CFSocketCallBackType type, CFDataRef
                      withType:SDLDebugType_Transport_iAP
                      toOutput:SDLDebugOutput_All
                       toGroup:self.debugConsoleGroupName];
+        _connected = NO;
     }
-
     return self;
 }
 
 
 - (void)connect {
-    [SDLDebugTool logInfo:@"Init" withType:SDLDebugType_Transport_TCP];
-
+    [SDLDebugTool logInfo:[NSString stringWithFormat:@"InitTCP withIP:%@ withPort:%@", self.hostName, self.portNumber] withType:SDLDebugType_Transport_TCP];
+    [self connectToServerWithIP:self.hostName andPort:[self.portNumber intValue]];
+    /*
     int sock_fd = call_socket([self.hostName UTF8String], [self.portNumber UTF8String]);
     if (sock_fd < 0) {
         [SDLDebugTool logInfo:@"Server Not Ready, Connection Failed" withType:SDLDebugType_Transport_TCP];
         return;
     }
-
+    
     CFSocketContext socketCtxt = {0, (__bridge void *)(self), NULL, NULL, NULL};
     socket = CFSocketCreateWithNative(kCFAllocatorDefault, sock_fd, kCFSocketDataCallBack | kCFSocketConnectCallBack, (CFSocketCallBack)&TCPCallback, &socketCtxt);
     CFRunLoopSourceRef source = CFSocketCreateRunLoopSource(kCFAllocatorDefault, socket, 0);
     CFRunLoopRef loop = CFRunLoopGetCurrent();
     CFRunLoopAddSource(loop, source, kCFRunLoopDefaultMode);
     CFRelease(source);
+    */
 }
 
 - (void)sendData:(NSData *)msgBytes {
     dispatch_async(_sendQueue, ^{
         NSString* byteStr = [SDLHexUtility getHexString:msgBytes];
-        [SDLDebugTool logInfo:[NSString stringWithFormat:@"Sent %lu bytes: %@", (unsigned long)msgBytes.length, byteStr] withType:SDLDebugType_Transport_TCP toOutput:SDLDebugOutput_DeviceConsole];
-        
+        int outputBytes = (int)[self.outputStream write:[msgBytes bytes] maxLength:msgBytes.length];
+        [SDLDebugTool logInfo:[NSString stringWithFormat:@"Sent %lu bytes: %@", (unsigned long)outputBytes, byteStr] withType:SDLDebugType_Transport_TCP toOutput:SDLDebugOutput_DeviceConsole];
+        /*
         CFSocketError e = CFSocketSendData(socket, NULL, (__bridge CFDataRef)msgBytes, 10000);
         if (e != kCFSocketSuccess) {
             NSString *errorCause = nil;
@@ -82,7 +88,55 @@ static void TCPCallback(CFSocketRef socket, CFSocketCallBackType type, CFDataRef
             
             [SDLDebugTool logInfo:[NSString stringWithFormat:@"Socket sendData error: %@", errorCause] withType:SDLDebugType_Transport_TCP toOutput:SDLDebugOutput_DeviceConsole];
         }
+        */
     });
+}
+
+#pragma mark - NSStream Delegate methods
+
+- (void)stream:(NSStream *)theStream handleEvent:(NSStreamEvent)streamEvent
+{
+    switch (streamEvent)
+    {
+        case NSStreamEventOpenCompleted:
+            if (!self.connected)
+            {
+                self.connected = YES;
+                [self.delegate onTransportConnected];
+            }
+            break;
+            
+        case NSStreamEventHasBytesAvailable:
+            if (self.inputStream == theStream)
+            {
+                uint8_t buffer[1024];   //TODO: MTU related?
+                int len;                   //buffer size
+                NSMutableData *response = [[NSMutableData alloc] init];
+                while ([self.inputStream hasBytesAvailable])
+                {
+                    len = (int)[self.inputStream read:buffer maxLength:sizeof(buffer)];
+                    if (len > 0)[response appendBytes:buffer length:len];
+                }
+                [self.delegate onDataReceived:response];
+            }
+            break;
+            
+        case NSStreamEventHasSpaceAvailable:
+            break;
+            
+        case NSStreamEventErrorOccurred:
+            break;
+            
+        case NSStreamEventEndEncountered:
+            [theStream close];
+            [theStream removeFromRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
+            break;
+            
+        case NSStreamEventNone:
+            break;
+            
+        default:
+    }
 }
 
 - (void)destructObjects {
@@ -106,6 +160,32 @@ static void TCPCallback(CFSocketRef socket, CFSocketCallBackType type, CFDataRef
 - (void)dealloc {
     [self destructObjects];
 }
+
+- (void)connectToServerWithIP:(NSString *)ip andPort:(int)port
+{
+    //instantiate input and output byte streams
+    CFReadStreamRef readStream;
+    CFWriteStreamRef writeStream;
+    
+    //open socket connection
+    CFStreamCreatePairWithSocketToHost(kCFAllocatorDefault, (__bridge CFStringRef)ip, port, &readStream, &writeStream);
+    
+    //cast C structs to Objective-C objects
+    self.inputStream =  (__bridge NSInputStream *)readStream;
+    self.outputStream = (__bridge NSOutputStream *)writeStream;
+    
+    //set NSStream delegates
+    [self.inputStream setDelegate:self];
+    [self.outputStream setDelegate:self];
+    
+    [self.inputStream scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    [self.outputStream scheduleInRunLoop:[NSRunLoop mainRunLoop] forMode:NSDefaultRunLoopMode];
+    
+    //open byte stream communication
+    [self.inputStream open];
+    [self.outputStream open];
+}
+
 
 @end
 
